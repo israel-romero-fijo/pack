@@ -23,18 +23,18 @@ import (
 	"github.com/buildpack/lifecycle"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/sclevine/spec"
 	"github.com/sclevine/spec/report"
 
 	"github.com/buildpack/pack/builder"
 	"github.com/buildpack/pack/cache"
-	"github.com/buildpack/pack/docker"
 	h "github.com/buildpack/pack/testhelpers"
 )
 
 var packPath string
-var dockerCli *docker.Client
+var dockerCli *client.Client
 var registryConfig *h.TestRegistryConfig
 
 func TestAcceptance(t *testing.T) {
@@ -58,7 +58,7 @@ func TestAcceptance(t *testing.T) {
 	}
 
 	var err error
-	dockerCli, err = docker.New()
+	dockerCli, err = client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.38"))
 	h.AssertNil(t, err)
 	registryConfig = h.RunRegistry(t, true)
 	defer registryConfig.StopRegistry(t)
@@ -656,7 +656,6 @@ func testAcceptance(t *testing.T, when spec.G, it spec.S) {
 			})
 		})
 
-		//todo do we need this test and if so how do we cleanup
 		when("no run-image flag", func() {
 			var origID string
 			var origRunImageID string
@@ -1018,7 +1017,7 @@ func runDockerImageWithOutput(t *testing.T, containerName, repoName string) stri
 	defer dockerCli.ContainerRemove(ctx, ctr.ID, dockertypes.ContainerRemoveOptions{})
 
 	var buf bytes.Buffer
-	err = dockerCli.RunContainer(ctx, ctr.ID, &buf, &buf)
+	err = h.RunContainer(ctx, dockerCli, ctr.ID, &buf, &buf)
 	h.AssertNil(t, err)
 
 	return buf.String()
@@ -1081,7 +1080,7 @@ func terminateAtStep(t *testing.T, cmd *exec.Cmd, buf *bytes.Buffer, pattern str
 	}
 }
 
-func imageLabel(t *testing.T, dockerCli *docker.Client, repoName, labelName string) string {
+func imageLabel(t *testing.T, dockerCli *client.Client, repoName, labelName string) string {
 	t.Helper()
 	inspect, _, err := dockerCli.ImageInspectWithRaw(context.Background(), repoName)
 	h.AssertNil(t, err)
@@ -1092,7 +1091,7 @@ func imageLabel(t *testing.T, dockerCli *docker.Client, repoName, labelName stri
 	return label
 }
 
-func assertImageLabelAbsent(t *testing.T, dockerCli *docker.Client, repoName, labelName string) {
+func assertImageLabelAbsent(t *testing.T, dockerCli *client.Client, repoName, labelName string) {
 	t.Helper()
 	inspect, _, err := dockerCli.ImageInspectWithRaw(context.Background(), repoName)
 	h.AssertNil(t, err)

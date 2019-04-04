@@ -3,6 +3,7 @@ package pack_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io/ioutil"
 	"math/rand"
 	"os"
@@ -40,17 +41,17 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 			mockController *gomock.Controller
 			factory        *pack.BuildFactory
 			mockCache      *mocks.MockCache
-			mockFetcher    *mocks.MockFetcher
+			MockImageFetcher    *mocks.MockImageFetcher
 		)
 
 		it.Before(func() {
 			mockController = gomock.NewController(t)
 			mockCache = mocks.NewMockCache(mockController)
-			mockFetcher = mocks.NewMockFetcher(mockController)
+			MockImageFetcher = mocks.NewMockImageFetcher(mockController)
 			logger = logging.NewLogger(&outBuf, &errBuf, true, false)
 
 			factory = &pack.BuildFactory{
-				Fetcher: mockFetcher,
+				Fetcher: MockImageFetcher,
 				Config: &config.Config{
 					DefaultBuilder: "some/builder",
 				},
@@ -68,11 +69,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 		it("defaults to daemon, default-builder, pulls builder and run images, selects run-image from builder", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/run", gomock.Any()).Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", true, true).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -86,11 +86,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 		it("respects builder from flags", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "custom/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "custom/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/run", gomock.Any()).Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", true, true).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -104,11 +103,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 		it("doesn't pull builder or run images when --no-pull is passed", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchLocalImage("custom/builder").Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "custom/builder", true, false).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchLocalImage("some/run").Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", true, false).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				NoPull:   true,
@@ -124,11 +122,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").
 				Return(`{"stack":{"runImage": {"image": "some/run", "mirrors": ["registry.com/some/run"]}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "registry.com/some/run", gomock.Any()).Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "registry.com/some/run", true, true).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "registry.com/some/app",
@@ -153,14 +150,13 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 				mockBuilderImage := mocks.NewMockImage(mockController)
 				mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").
 					Return(`{"stack":{"runImage": {"image": "default/run", "mirrors": ["registry.com/default/run"]}}}`, nil).AnyTimes()
-				mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+				MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 				mockRunImage = mocks.NewMockImage(mockController)
-				mockRunImage.EXPECT().Found().Return(true, nil)
 			})
 
 			it("selects from local override run images first", func() {
-				mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "registry.com/override/run", gomock.Any()).Return(mockRunImage, nil)
+				MockImageFetcher.EXPECT().Fetch(gomock.Any(), "registry.com/override/run", true, true).Return(mockRunImage, nil)
 
 				config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 					RepoName: "registry.com/some/app",
@@ -172,7 +168,7 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 			})
 
 			it("selects the first local override if no run image matches the registry", func() {
-				mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "registry.com/override/run", gomock.Any()).Return(mockRunImage, nil)
+				MockImageFetcher.EXPECT().Fetch(gomock.Any(), "registry.com/override/run", true, true).Return(mockRunImage, nil)
 
 				config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 					RepoName: "some-other-registry.com/some/app",
@@ -187,11 +183,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 		it("uses a remote run image when --publish is passed", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchRemoteImage("some/run").Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", false, false).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -205,11 +200,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 
 		it("allows run-image from flags if the stacks match", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchRemoteImage("override/run").Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "override/run", false, false).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -225,11 +219,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 		it("uses working dir if appDir is set to placeholder value", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchRemoteImage("some/run").Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", false, false).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -247,7 +240,7 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Name().Return("some/builder")
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return("", nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			_, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -260,7 +253,7 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Name().Return("some/builder")
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return("junk", nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			_, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -269,13 +262,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 			h.AssertError(t, err, "failed to parse metadata for builder 'some/builder': invalid character 'j' looking for beginning of value")
 		})
 
-		it("returns an error if remote run image doesn't exist in remote on published builds", func() {
+		it("returns an error if fetching run-image returns an error", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
-
-			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(false, nil)
-			mockFetcher.EXPECT().FetchRemoteImage("some/run").Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", false, false).Return(nil, errors.New("some-error"))
 
 			_, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -283,34 +273,16 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 				RunImage: "some/run",
 				Publish:  true,
 			})
-			h.AssertError(t, err, "remote run image 'some/run' does not exist")
-		})
-
-		it("returns an error if local run image doesn't exist locally on local builds", func() {
-			mockBuilderImage := mocks.NewMockImage(mockController)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
-
-			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(false, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/run", gomock.Any()).Return(mockRunImage, nil)
-
-			_, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
-				RepoName: "some/app",
-				Builder:  "some/builder",
-				RunImage: "some/run",
-				Publish:  false,
-			})
-			h.AssertError(t, err, "local run image 'some/run' does not exist")
+			h.AssertError(t, err, "some-error")
 		})
 
 		it("sets Env", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/run", gomock.Any()).Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", true, true).Return(mockRunImage, nil)
 
 			config, err := factory.BuildConfigFromFlags(context.TODO(), &pack.BuildFlags{
 				RepoName: "some/app",
@@ -333,11 +305,10 @@ func testBuildFactory(t *testing.T, when spec.G, it spec.S) {
 		it("sets EnvFile", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/run", gomock.Any()).Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", true, true).Return(mockRunImage, nil)
 
 			envFile, err := ioutil.TempFile("", "pack.build.envfile")
 			h.AssertNil(t, err)
@@ -368,11 +339,10 @@ PATH
 		it("sets EnvFile with Env overrides", func() {
 			mockBuilderImage := mocks.NewMockImage(mockController)
 			mockBuilderImage.EXPECT().Label("io.buildpacks.builder.metadata").Return(`{"stack":{"runImage": {"image": "some/run"}}}`, nil).AnyTimes()
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/builder", gomock.Any()).Return(mockBuilderImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/builder", true, true).Return(mockBuilderImage, nil)
 
 			mockRunImage := mocks.NewMockImage(mockController)
-			mockRunImage.EXPECT().Found().Return(true, nil)
-			mockFetcher.EXPECT().FetchUpdatedLocalImage(gomock.Any(), "some/run", gomock.Any()).Return(mockRunImage, nil)
+			MockImageFetcher.EXPECT().Fetch(gomock.Any(), "some/run", true, true).Return(mockRunImage, nil)
 
 			envFile, err := ioutil.TempFile("", "pack.build.envfile")
 			h.AssertNil(t, err)

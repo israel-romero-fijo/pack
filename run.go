@@ -1,5 +1,3 @@
-// TODO: We should rename this file (and its test and test file) to avoid confusion with the one in the `commands` package
-
 package pack
 
 import (
@@ -9,14 +7,15 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/buildpack/lifecycle/image"
 	dockertypes "github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
+	dcontainer "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/pkg/errors"
 
 	"github.com/buildpack/pack/cache"
-	"github.com/buildpack/pack/docker"
+	"github.com/buildpack/pack/container"
+	"github.com/buildpack/pack/image"
 	"github.com/buildpack/pack/logging"
 	"github.com/buildpack/pack/style"
 )
@@ -37,7 +36,7 @@ type RunConfig struct {
 	Build BuildRunner
 	// All below are from BuildConfig
 	RepoName string
-	Cli      Docker
+	Cli      *client.Client
 	Logger   *logging.Logger
 }
 
@@ -51,7 +50,6 @@ func (bf *BuildFactory) RunConfigFromFlags(ctx context.Context, f *RunFlags) (*R
 		Ports: f.Ports,
 		// All below are from BuildConfig
 		RepoName: bc.RepoName,
-		Cli:      bc.Cli,
 		Logger:   bc.Logger,
 	}
 
@@ -59,28 +57,28 @@ func (bf *BuildFactory) RunConfigFromFlags(ctx context.Context, f *RunFlags) (*R
 }
 
 func Run(ctx context.Context, outWriter, errWriter io.Writer, appDir, buildImage, runImage string, ports []string) error {
-	// TODO: Receive Cache and docker client as an argument of this function
-	dockerClient, err := docker.New()
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.38"))
 	if err != nil {
 		return err
 	}
+
 	c, err := cache.New(runImage, dockerClient)
 	if err != nil {
 		return err
 	}
-	imageFactory, err := image.NewFactory(image.WithOutWriter(outWriter))
+
+	imageFetcher, err := image.NewFetcher(outWriter, dockerClient)
 	if err != nil {
 		return err
 	}
-	imageFetcher := &ImageFetcher{
-		Factory: imageFactory,
-		Docker:  dockerClient,
-	}
+
 	logger := logging.NewLogger(outWriter, errWriter, true, false)
+
 	bf, err := DefaultBuildFactory(logger, c, dockerClient, imageFetcher)
 	if err != nil {
 		return err
 	}
+
 	r, err := bf.RunConfigFromFlags(ctx,
 		&RunFlags{
 			BuildFlags: BuildFlags{
@@ -93,6 +91,7 @@ func Run(ctx context.Context, outWriter, errWriter io.Writer, appDir, buildImage
 	if err != nil {
 		return err
 	}
+
 	return r.Run(ctx)
 }
 
@@ -113,13 +112,13 @@ func (r *RunConfig) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	ctr, err := r.Cli.ContainerCreate(ctx, &container.Config{
+	ctr, err := r.Cli.ContainerCreate(ctx, &dcontainer.Config{
 		Image:        r.RepoName,
 		AttachStdout: true,
 		AttachStderr: true,
 		ExposedPorts: exposedPorts,
 		Labels:       map[string]string{"author": "pack"},
-	}, &container.HostConfig{
+	}, &dcontainer.HostConfig{
 		AutoRemove:   true,
 		PortBindings: portBindings,
 	}, nil, "")
@@ -129,7 +128,7 @@ func (r *RunConfig) Run(ctx context.Context) error {
 	defer r.Cli.ContainerRemove(context.Background(), ctr.ID, dockertypes.ContainerRemoveOptions{Force: true})
 
 	logContainerListening(r.Logger, portBindings)
-	if err = r.Cli.RunContainer(ctx, ctr.ID, r.Logger.VerboseWriter(), r.Logger.VerboseErrorWriter()); err != nil {
+	if err = container.Run(ctx, r.Cli, ctr.ID, r.Logger.VerboseWriter(), r.Logger.VerboseErrorWriter()); err != nil {
 		return errors.Wrap(err, "run container")
 	}
 

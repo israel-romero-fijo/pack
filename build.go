@@ -10,15 +10,17 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/docker/docker/client"
+
+	"github.com/buildpack/pack/image"
+
 	"github.com/buildpack/pack/build"
 	"github.com/buildpack/pack/builder"
 	"github.com/buildpack/pack/cache"
 	"github.com/buildpack/pack/config"
-	"github.com/buildpack/pack/docker"
 	"github.com/buildpack/pack/logging"
 	"github.com/buildpack/pack/style"
 
-	lcimg "github.com/buildpack/lifecycle/image"
 	"github.com/pkg/errors"
 )
 
@@ -29,11 +31,11 @@ type Cache interface {
 }
 
 type BuildFactory struct {
-	Cli     Docker
+	Cli     *client.Client
 	Logger  *logging.Logger
 	Config  *config.Config
 	Cache   Cache
-	Fetcher Fetcher
+	Fetcher ImageFetcher
 }
 
 type BuildFlags struct {
@@ -56,7 +58,6 @@ type BuildConfig struct {
 	Publish    bool
 	ClearCache bool
 	// Above are copied from BuildFlags are set by init
-	Cli    Docker
 	Logger *logging.Logger
 	Config *config.Config
 	// Above are copied from BuildFactory
@@ -64,7 +65,7 @@ type BuildConfig struct {
 	LifecycleConfig build.LifecycleConfig
 }
 
-func DefaultBuildFactory(logger *logging.Logger, cache Cache, dockerClient Docker, fetcher Fetcher) (*BuildFactory, error) {
+func DefaultBuildFactory(logger *logging.Logger, cache Cache, dockerClient *client.Client, fetcher ImageFetcher) (*BuildFactory, error) {
 	f := &BuildFactory{
 		Logger:  logger,
 		Cache:   cache,
@@ -130,7 +131,6 @@ func (bf *BuildFactory) BuildConfigFromFlags(ctx context.Context, f *BuildFlags)
 		RepoName:   f.RepoName,
 		Publish:    f.Publish,
 		ClearCache: f.ClearCache,
-		Cli:        bf.Cli,
 		Logger:     bf.Logger,
 		Config:     bf.Config,
 	}
@@ -156,20 +156,11 @@ func (bf *BuildFactory) BuildConfigFromFlags(ctx context.Context, f *BuildFlags)
 		b.Builder = f.Builder
 	}
 
-	if !f.NoPull {
-		bf.Logger.Verbose("Pulling builder image %s (use --no-pull flag to skip this step)", style.Symbol(b.Builder))
-		img, err := bf.Fetcher.FetchUpdatedLocalImage(ctx, b.Builder, bf.Logger.RawVerboseWriter())
-		if err != nil {
-			return nil, err
-		}
-		builderImage = builder.NewBuilder(img, bf.Config)
-	} else {
-		img, err := bf.Fetcher.FetchLocalImage(b.Builder)
-		if err != nil {
-			return nil, err
-		}
-		builderImage = builder.NewBuilder(img, bf.Config)
+	bimg, err := bf.Fetcher.Fetch(ctx, b.Builder, true, !f.NoPull)
+	if err != nil {
+		return nil, err
 	}
+	builderImage = builder.NewBuilder(bimg, bf.Config)
 
 	if f.RunImage != "" {
 		bf.Logger.Verbose("Using user-provided run image %s", style.Symbol(f.RunImage))
@@ -183,37 +174,8 @@ func (bf *BuildFactory) BuildConfigFromFlags(ctx context.Context, f *BuildFlags)
 		b.Logger.Verbose("Selected run image %s from builder %s", style.Symbol(b.RunImage), style.Symbol(b.Builder))
 	}
 
-	var runImage lcimg.Image
-	if f.Publish {
-		runImage, err = bf.Fetcher.FetchRemoteImage(b.RunImage)
-		if err != nil {
-			return nil, err
-		}
-
-		if found, err := runImage.Found(); !found {
-			return nil, fmt.Errorf("remote run image %s does not exist", style.Symbol(b.RunImage))
-		} else if err != nil {
-			return nil, fmt.Errorf("invalid run image %s: %s", style.Symbol(b.RunImage), err)
-		}
-	} else {
-		if !f.NoPull {
-			bf.Logger.Verbose("Pulling run image %s (use --no-pull flag to skip this step)", style.Symbol(b.RunImage))
-			runImage, err = bf.Fetcher.FetchUpdatedLocalImage(ctx, b.RunImage, b.Logger.RawVerboseWriter())
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			runImage, err = bf.Fetcher.FetchLocalImage(b.RunImage)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		if found, err := runImage.Found(); !found {
-			return nil, fmt.Errorf("local run image %s does not exist", style.Symbol(b.RunImage))
-		} else if err != nil {
-			return nil, fmt.Errorf("invalid run image %s: %s", style.Symbol(b.RunImage), err)
-		}
+	if _, err = bf.Fetcher.Fetch(ctx, b.RunImage, !f.Publish, !(f.NoPull || f.Publish)); err != nil {
+		return nil, err
 	}
 
 	b.Cache = bf.Cache
@@ -231,28 +193,27 @@ func (bf *BuildFactory) BuildConfigFromFlags(ctx context.Context, f *BuildFlags)
 }
 
 func Build(ctx context.Context, outWriter, errWriter io.Writer, appDir, builderImage, runImage, repoName string, publish, clearCache bool) error {
-	// TODO: Receive Cache as an argument of this function
-	dockerClient, err := docker.New()
+	dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("1.38"))
 	if err != nil {
 		return err
 	}
+
 	c, err := cache.New(repoName, dockerClient)
 	if err != nil {
 		return err
 	}
-	imageFactory, err := lcimg.NewFactory(lcimg.WithOutWriter(outWriter))
+
+	imageFetcher, err := image.NewFetcher(outWriter, dockerClient)
 	if err != nil {
 		return err
 	}
-	imageFetcher := &ImageFetcher{
-		Factory: imageFactory,
-		Docker:  dockerClient,
-	}
+
 	logger := logging.NewLogger(outWriter, errWriter, true, false)
 	bf, err := DefaultBuildFactory(logger, c, dockerClient, imageFetcher)
 	if err != nil {
 		return err
 	}
+
 	b, err := bf.BuildConfigFromFlags(ctx,
 		&BuildFlags{
 			AppDir:     appDir,
@@ -265,6 +226,7 @@ func Build(ctx context.Context, outWriter, errWriter io.Writer, appDir, builderI
 	if err != nil {
 		return err
 	}
+
 	return b.Run(ctx)
 }
 
