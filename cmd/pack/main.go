@@ -53,6 +53,8 @@ func main() {
 
 	rootCmd.AddCommand(commands.Version(&logger, Version))
 
+	rootCmd.AddCommand(commands.AutoCompletionCommand())
+
 	if err := rootCmd.Execute(); err != nil {
 		if commands.IsSoftError(err) {
 			os.Exit(2)
