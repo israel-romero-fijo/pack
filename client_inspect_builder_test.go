@@ -3,20 +3,22 @@ package pack_test
 import (
 	"errors"
 	"fmt"
+	"github.com/buildpack/lifecycle/testhelpers"
+	"io/ioutil"
 	"testing"
 
-	imgtest "github.com/buildpack/lifecycle/testhelpers"
+	"github.com/buildpack/lifecycle/image/fakes"
 	"github.com/fatih/color"
 	"github.com/golang/mock/gomock"
 	"github.com/sclevine/spec"
 	"github.com/sclevine/spec/report"
 
+	"github.com/buildpack/pack/logging"
 	h "github.com/buildpack/pack/testhelpers"
 
 	"github.com/buildpack/pack"
 	"github.com/buildpack/pack/config"
 	"github.com/buildpack/pack/mocks"
-	"github.com/buildpack/pack/testhelpers"
 )
 
 func TestInspectBuilder(t *testing.T) {
@@ -29,18 +31,21 @@ func testInspectBuilder(t *testing.T, when spec.G, it spec.S) {
 		client         *pack.Client
 		mockFetcher    *mocks.MockFetcher
 		mockController *gomock.Controller
-		builderImage   *imgtest.FakeImage
+		builderImage   *fakes.Image
 	)
 
 	it.Before(func() {
 		mockController = gomock.NewController(t)
 		mockFetcher = mocks.NewMockFetcher(mockController)
-		client = pack.NewClient(&config.Config{
-			RunImages: []config.RunImage{
-				{Image: "some/run-image", Mirrors: []string{"some/local-mirror"}},
+		client = pack.NewClient(
+			&config.Config{
+				RunImages: []config.RunImage{
+					{Image: "some/run-image", Mirrors: []string{"some/local-mirror"}},
+				},
 			},
-		}, mockFetcher)
-		builderImage = imgtest.NewFakeImage(t, "some/builder", "", "")
+			logging.NewLogger(ioutil.Discard, ioutil.Discard, false, false),
+			mockFetcher)
+		builderImage = fakes.NewImage(t, "some/builder", "", "")
 	})
 
 	it.After(func() {
@@ -145,7 +150,7 @@ func testInspectBuilder(t *testing.T, when spec.G, it spec.S) {
 
 	when("the image does not exist", func() {
 		it.Before(func() {
-			notFoundImage := imgtest.NewFakeImage(t, "", "", "")
+			notFoundImage := fakes.NewImage(t, "", "", "")
 			notFoundImage.Delete()
 			mockFetcher.EXPECT().FetchLocalImage("some/builder").Return(notFoundImage, nil)
 		})
